@@ -17,6 +17,7 @@ from statsmodels.graphics import utils
 from statsmodels.tsa.stattools import acf, pacf
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.statespace.sarimax import SARIMAXResults
 from pandas.tools.plotting import autocorrelation_plot
 from pandas import DataFrame
 from sklearn.metrics import mean_squared_error
@@ -34,7 +35,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 def plotData():
     '''Analyze the data from the local directory'''
-    files = glob.glob("./6/day*.dat")
+    files = glob.glob("./6_1/day*.dat")
     fig = []
     data_org = []
     data_cut = []
@@ -105,31 +106,40 @@ def plotData():
         #                index=x,
         #                data=y,
         #                ratio=rate)
-        errors_sarima = predict_sarima(number=(i + 1),
-                                       index=x,
-                                       data=y,
-                                       ratio=rate)[0]
+
+        # errors_sarima = predict_sarima(number=(i + 1),
+        #                                index=x,
+        #                                data=y,
+        #                                ratio=rate)[0]
+
+        # improved sarima associated with LSTM
+        errors_lsarima = predict_improved_lsarima(number=(i + 1),
+                                                  index=x,
+                                                  data=y,
+                                                  ratio=rate)[0]
 
         # errors_lstm, a = predict_LSTM_RNN(number=(i + 1),
         #                             index=x,
         #                             data=y,
         #                             ratio=rate)
 
-        errors_lstm, errors_gru, a = predict_RNN(number=(i + 1),
-                                                 index=x,
-                                                 data=y,
-                                                 ratio=rate)
+        # errors_lstm, errors_gru, a = predict_RNN(number=(i + 1),
+        #                                          index=x,
+        #                                          data=y,
+        #                                          ratio=rate)
 
         print("********************")
         print("Test Score:")
         print("====================")
         print("\t \t MSE \t MAE \t MAPE \t R2")
-        print("SARIMA:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_sarima[
-              0], errors_sarima[1], errors_sarima[2], errors_sarima[3]))
-        print("LSTM_RNN:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_lstm[
-              0], errors_lstm[1], errors_lstm[2], errors_lstm[3]))
-        print("GRU_RNN:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_gru[
-              0], errors_gru[1], errors_gru[2], errors_gru[3]))
+        print("LSARIMA:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_lsarima[
+              0], errors_lsarima[1], errors_lsarima[2], errors_lsarima[3]))
+        # print("SARIMA:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_sarima[
+        #       0], errors_sarima[1], errors_sarima[2], errors_sarima[3]))
+        # print("LSTM_RNN:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_lstm[
+        #       0], errors_lstm[1], errors_lstm[2], errors_lstm[3]))
+        # print("GRU_RNN:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_gru[
+        #       0], errors_gru[1], errors_gru[2], errors_gru[3]))
 
         # TODO: Comment for now
         # rate = [1.0 * 1 / 10, 1.0 * 3 / 10, 1.0 *
@@ -197,79 +207,78 @@ def mean_absolute_percentage_error(val_actual, val_predict):
     return np.mean(1.0 * np.abs((val_actual - val_predict) / val_actual)) * 100
 
 
-def predict_improved_arima(number, index, data):
-    # Set the index as date type
-    # print number
+def predict_improved_lsarima(number, index, data, ratio):
+
+    # Seasonal value, each 48-example is a loop
+    sValue = 48
+    # 30 minutes
+    interval = 30
+
     df = pd.DataFrame({'year': 1999,
                        'month': 3,
                        'day': 1,
-                       'minute': index * 5})
-    # print df
-    # print pd.to_datetime(df)
-    # normalize data
-    # norm_data = normalize(data, axis=1) + 0.5
+                       'minute': index * interval})
     norm_data = normalized(data)
-    # print norm_data
+
     data = pd.Series(norm_data, index=pd.to_datetime(df))
-    X = data.values
-    # print X
-    size = int(len(X) * 0.8)
-    train, test = X[0:size], X[size:len(X)]
-    history = [x for x in train]
-    predictions1 = list()
-    predictions2 = list()
-    predictions3 = list()
 
-    i, j = 2, 2
-    res = sm.tsa.arma_order_select_ic(train, ic=['aic', 'bic'], trend='nc')
-    # print res.aic_min_order
-    # print res.bic_min_order
-    for t in range(len(test)):
-        # model = ARIMA(history, order=(i, 1, j))
-        # model = ARIMA(history, order=(res.aic_min_order[0],
-        #                               1,
-        #                               res.aic_min_order[1]))
-        # ARIMA - Min AIC
-        model1 = ARIMA(history, order=(
-            res.aic_min_order[0], 1, res.aic_min_order[1]))
-        # ARIMA - Min BIC
-        model2 = ARIMA(history, order=(
-            res.bic_min_order[0], 1, res.bic_min_order[1]))
+    # Build models
+    models = []
 
-        model_fit1 = model1.fit(disp=0)
-        model_fit2 = model2.fit(disp=0)
+    # seasonal_order=(P,D,Q,s),
+    # s is the sequence, representing the number of examples in a period
+    # (1,1,1)(1,1,1,48)
+    model = sm.tsa.statespace.SARIMAX(data.values,
+                                      trend='n',
+                                      order=(0, 1, 0),
+                                      seasonal_order=(1, 1, 1, sValue))
+    results = model.fit(disp=0)
+    # print results.summary()
 
-        output1 = model_fit1.forecast()
-        output2 = model_fit2.forecast()
+    decomposition = seasonal_decompose(data.values, freq=sValue)
+    residual = decomposition.resid
+    print("### Residuals ###")
+    print len(residual)
+    print("#################")
 
-        # print output
-        yhat1 = output1[0][0]
-        yhat2 = output2[0][0]
+    # Make predictions
+    predict_begin = int(ratio * len(index))
+    predict_end = int(len(index))
+    data_forecast = results.predict(start=predict_begin,
+                                    end=predict_end,
+                                    dynamic=True)
 
-        predictions1.append(yhat1)
-        predictions2.append(yhat2)
-
-        obs = test[t]
-
-        history.append(obs)
-
-        # print('predicted=%f, expected=%f' % (yhat, obs))
-    error1 = mean_squared_error(test, predictions1)
-    error2 = mean_squared_error(test, predictions2)
-    print('Test MSE of ARIMA - Min AIC: %.3f' % error1)
-    print('Test MSE of ARIMA - Min BIC: %.3f' % error2)
-
-    # plot
-    # duration = pd.to_datetime(df)[size - 1:len(X) - 1]
-    duration = pd.to_datetime(df)[size:len(X)]
-    predictions1 = pd.Series(predictions1, index=duration)
-    predictions2 = pd.Series(predictions2, index=duration)
+    # print len(data_forecast)
+    # Plot prediction results
+    duration = pd.to_datetime(df)[predict_begin - 1:predict_end]
+    # print len(duration)
+    # print len(data_forecast) == len(duration)
+    data_forecast = pd.Series(data_forecast, index=duration)
 
     # print predictions
     fig, ax = plt.subplots(figsize=(10, 3))
     ax = data.ix['1999-03-01 00:00:00':].plot(ax=ax)
-    predictions1.plot(ax=ax, color='red')
-    predictions2.plot(ax=ax, color='green')
+    # Figure 8
+    data_forecast.plot(ax=ax, color='red')
+
+    # print MSE
+    testScore_mse = mean_squared_error(data[predict_begin - 1:], data_forecast)
+    # print("Test Score: %.4f MSE" % error)
+
+    # print MAE
+    testScore_mae = mean_absolute_error(
+        data[predict_begin - 1:], data_forecast)
+
+    # print MAPE
+    testScore_mape = mean_absolute_percentage_error(
+        data[predict_begin - 1:], data_forecast)
+
+    # print R squre
+    testScore_r2 = r2_score(data[predict_begin - 1:], data_forecast)
+
+    error = [testScore_mse, testScore_mae, testScore_mape, testScore_r2]
+
+    return (error, data_forecast)
 
 
 def predict_RNN(number, index, data, ratio):
@@ -815,8 +824,10 @@ def change2zero(data, order):
 def normalized1(x):
     return 0.8 * (x - min(x)) / (max(x) - min(x)) + 0.1
 
+
 def normalized(x):
     return (x - min(x)) / (max(x) - min(x))
+
 
 def predict_arima(number, index, data):
     # Set the index as date type
