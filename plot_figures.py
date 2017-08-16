@@ -5,6 +5,7 @@
 # Libraries for SARIMA
 import glob
 import numpy as np
+import copy
 import matplotlib.pyplot as plt
 import pandas as pd
 import statsmodels.api as sm
@@ -30,12 +31,17 @@ import math
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.layers import LSTM, GRU
+from keras.layers import Dropout
+from keras.layers import Activation
 from sklearn.preprocessing import MinMaxScaler
+from numpy import newaxis
+
+import time
 
 
 def plotData():
     '''Analyze the data from the local directory'''
-    files = glob.glob("./6_1/day*.dat")
+    files = glob.glob("./6/day*.dat")
     fig = []
     data_org = []
     data_cut = []
@@ -112,16 +118,26 @@ def plotData():
         #                                data=y,
         #                                ratio=rate)[0]
 
-        # improved sarima associated with LSTM
-        errors_lsarima = predict_improved_lsarima(number=(i + 1),
+        # predict at the same time interval
+        # errors_rnn_section = predict_rnn_section(number=(i + 1), 
+        #                                             index=x, 
+        #                                             data=y, 
+        #                                             ratio=rate)[0]
+        errors_lsarima = predict_improved_lsarima2(number=(i + 1),
                                                   index=x,
                                                   data=y,
                                                   ratio=rate)[0]
 
+        # improved sarima associated with LSTM
+        # errors_lsarima = predict_improved_lsarima(number=(i + 1),
+        #                                           index=x,
+        #                                           data=y,
+        #                                           ratio=rate)[0]
+
         # errors_lstm, a = predict_LSTM_RNN(number=(i + 1),
-        #                             index=x,
-        #                             data=y,
-        #                             ratio=rate)
+        #                                   index=x,
+        #                                   data=y,
+        #                                   ratio=rate)
 
         # errors_lstm, errors_gru, a = predict_RNN(number=(i + 1),
         #                                          index=x,
@@ -131,7 +147,10 @@ def plotData():
         print("********************")
         print("Test Score:")
         print("====================")
-        print("\t \t MSE \t MAE \t MAPE \t R2")
+        print(" \t \t MSE \t\t MAE \t\t MAPE \t\t R2")
+        # print("RNN_SECTION:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_rnn_section[
+        #       0], errors_rnn_section[1], errors_rnn_section[2], errors_rnn_section[3]))
+        # print("LSTM_RNN:\t %.4f" % (errors_lstm))
         print("LSARIMA:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_lsarima[
               0], errors_lsarima[1], errors_lsarima[2], errors_lsarima[3]))
         # print("SARIMA:\t %.4f \t %.4f \t %.4f \t %.4f" % (errors_sarima[
@@ -199,6 +218,112 @@ def create_dataset(dataset, look_back=1):
     return np.array(dataX), np.array(dataY)
 
 
+def format_dataset(dataset, seq_len, len_ratio):
+
+    sequence_length = seq_len + 1
+    result = []
+    for index in range(len(dataset) - sequence_length):
+        result.append(dataset[index:(index + sequence_length)])
+
+    result = np.array(result)
+
+    row = round(len_ratio * result.shape[0])
+    train = result[:int(row), :]
+    np.random.shuffle(train)
+    x_train = train[:, :-1]
+    y_train = train[:, -1]
+    x_test = result[int(row):, :-1]
+    y_test = result[int(row):, -1]
+
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
+
+    return [x_train, y_train, x_test, y_test]
+
+
+def build_lstm_model(layers, dropout_ratio=0.2):
+    model = Sequential()
+
+    model.add(LSTM(
+        input_shape=(layers[1], layers[0]),
+        units=layers[1],
+        return_sequences=True))
+    model.add(Dropout(dropout_ratio))
+
+    if len(layers) >= 4:
+        model.add(LSTM(
+            layers[2],
+            return_sequences=False))
+        model.add(Dropout(dropout_ratio))
+        model.add(Dense(units=layers[3]))
+    else:
+        model.add(Dense(units=layers[2]))
+
+    model.add(Activation("tanh"))
+
+    start = time.time()
+    model.compile(loss="mse", optimizer="adam")
+    print("> Compilation Time: ", time.time() - start)
+    return model
+
+
+def build_gru_model(layers, dropout_ratio=0.2):
+    model = Sequential()
+
+    model.add(GRU(
+        input_shape=(layers[1], layers[0]),
+        units=layers[1],
+        return_sequences=True))
+    model.add(Dropout(dropout_ratio))
+
+    if len(layers) >= 4:
+        model.add(GRU(
+            layers[2],
+            return_sequences=False))
+        model.add(Dropout(dropout_ratio))
+        model.add(Dense(units=layers[3]))
+    else:
+        model.add(Dense(units=layers[2]))
+
+    model.add(Activation("tanh"))
+
+    start = time.time()
+    model.compile(loss="mse", optimizer="adam")
+    print("> Compilation Time: ", time.time() - start)
+    return model
+
+
+def predict_point_by_point(model, data):
+    predict = model.predict(data)
+    # predict = np.reshape(predict, (predict.size,))
+    return predict
+
+
+def predict_sequence_full(model, data, window_size):
+    curr_frame = data[0]
+    predicted = []
+    for i in range(len(data)):
+        predicted.append(model.predict(curr_frame[newaxis, :, :])[0, 0])
+        curr_frame = curr_frame[1:]
+        curr_frame = np.insert(
+            curr_frame, [window_size - 1], predicted[-1], axis=0)
+    return np.array(predicted)
+
+
+def predict_sequences_multiple(model, data, window_size, prediction_len):
+    prediction_seqs = []
+    for i in range(int(len(data) / prediction_len)):
+        curr_frame = data[i * prediction_len]
+        predicted = []
+        for j in range(prediction_len):
+            predicted.append(model.predict(curr_frame[newaxis, :, :])[0, 0])
+            curr_frame = curr_frame[1:]
+            curr_frame = np.insert(
+                curr_frame, [window_size - 1], predicted[-1], axis=0)
+            prediction_seqs.append(predicted)
+    return prediction_seqs
+
+
 def mean_absolute_percentage_error(val_actual, val_predict):
     '''
     Extend the MAPE function
@@ -207,12 +332,255 @@ def mean_absolute_percentage_error(val_actual, val_predict):
     return np.mean(1.0 * np.abs((val_actual - val_predict) / val_actual)) * 100
 
 
+def predict_rnn_section(number, index, data, ratio):
+    print("###################################")
+    print("predict_rnn_section")
+    sValue = 48
+    interval = 30
+
+    np.random.seed(7)
+    section_number = int(len(data) / sValue)
+    print("residual: ")
+    print data
+
+    df = pd.DataFrame({'year': 1999,
+                       'month': 3,
+                       'day': 1,
+                       'minute': index * interval})
+    data = pd.Series(data, index=pd.to_datetime(df))
+
+    datasetList = []
+    for i in range(sValue):
+        tempList = []
+        for j in range(section_number):
+            tempList.append(data[i + j * sValue])
+        datasetList.append(np.array(tempList).reshape(-1, 1))
+    print("datasetList: ")
+    print datasetList
+
+    print("> Formatting data...")
+    seq_len = 2
+    batch_size = 512
+    epochs = 10000
+    layers_structure = [1, seq_len, 4, 1]
+    trainX_List = []
+    trainY_List = []
+    testX_List = []
+    testY_List = []
+    for i in range(len(datasetList)):
+        trainX, trainY, testX, testY = format_dataset(datasetList[i], 
+            seq_len=seq_len, len_ratio=ratio)
+        trainX_List.append(trainX)
+        trainY_List.append(trainY)
+        testX_List.append(testX)
+        testY_List.append(testY)
+    print("> Format completed.")
+
+    # Create and fit the LSTM network
+    trainPredict_List = []
+    testPredict_List = []
+    for i in range(len(datasetList)):      
+        model = build_lstm_model(layers_structure)  
+        model.fit(
+            trainX_List[i],
+            trainY_List[i],
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_split=0.05,
+            verbose=0)
+
+        # Make predictions
+        trainPredict_List.append(
+            float(predict_point_by_point(model, trainX_List[i])[0])) 
+        testPredict_List.append(
+            float(predict_point_by_point(model, testX_List[i])[0]))
+    
+    print testPredict_List
+    print len(testPredict_List)
+
+    return testPredict_List
+
+
+## Test ues
+def predict_improved_lsarima2(number, index, data, ratio):
+
+    # Seasonal value, each 48-example is a loop
+    sValue = 48
+    # 30 minutes
+    interval = 30
+
+    np.random.seed(7)
+    dataset = data.reshape(-1, 1)
+    dataset = normalized(dataset)
+
+    df = pd.DataFrame({'year': 1999,
+                       'month': 3,
+                       'day': 1,
+                       'minute': index * interval})
+    norm_data = normalized(data)
+    print norm_data
+    data = pd.Series(norm_data, index=pd.to_datetime(df))
+
+    # Build models
+    models = []
+
+    model = sm.tsa.statespace.SARIMAX(data.values,
+                                      trend='n',
+                                      order=(0, 1, 0),
+                                      seasonal_order=(1, 1, 1, sValue))
+    results = model.fit(disp=0)
+    decompose_freq = 6
+    decomposition = seasonal_decompose(data.values,
+                                       model="additive",
+                                       freq=decompose_freq)
+    residual = decomposition.resid
+
+    count = 0
+    for i in range(len(residual)):
+        if np.isnan(residual[i]):
+            residual[i] = 0.0
+    print("### Residuals ###")
+    print len(residual)
+    print len(data)
+    print residual
+    print count
+    print("#################")
+
+    # Predict the residual
+    # Reshape into X=t and Y=t+look_back
+    forecastResidual = residual.reshape(-1, 1)
+    forecastResidual[:decompose_freq / 2] = 0
+    forecastResidual[-decompose_freq / 2:] = 0
+
+    size = int(len(residual) * ratio)
+    forcast_ind = 48
+    seq_len = 12
+    # print("> Formatting data...")
+    # train_residualX, train_residualY, test_residualX, test_residualY = format_dataset(
+    #     forecastResidual, seq_len, len_ratio=ratio)
+    # print("> Format completed.")
+
+    # # Create and fit the LSTM network
+    # look_back = 1
+    # batch_size = 512
+    # epochs = 100
+    # layers_structure = [1, seq_len, 100, 1]
+
+    # model_residual = build_lstm_model(layers=layers_structure)
+
+    # model_residual.fit(
+    #     train_residualX,
+    #     train_residualY,
+    #     epochs=epochs,
+    #     batch_size=batch_size,
+    #     verbose=2)
+
+    # Make predictions
+    # predict_forecastResidual = predict_point_by_point(
+    #     model_residual, test_residualX)
+    # ================+
+    # predict_forecastResidual = predict_sequence_full(
+    #     model=model_residual,
+    #     data=test_residualX,
+    #     window_size=seq_len)
+    # =================
+    predict_forecastResidual = predict_rnn_section(number=number, 
+        index=index, data=residual, ratio=ratio)
+
+    print("====predict_forecastResidual====")
+    print len(predict_forecastResidual)
+    print predict_forecastResidual
+    print("===================")
+
+    predict_begin = int(ratio * len(index))
+    predict_end = int(len(index))
+    data_forecast = results.predict(start=predict_begin,
+                                    end=predict_end,
+                                    dynamic=True)
+    data_forecast_with_residual_sarima = copy.deepcopy(data_forecast)
+    data_forecast_with_residual_lsarima = copy.deepcopy(data_forecast)
+
+    print("=====data_forecast_with_residual=====")
+    print len(data_forecast_with_residual_sarima)
+    print data_forecast_with_residual_sarima
+    print("===================")
+
+    #====================================
+    # Residual calculated by sarima
+    for i in range(len(predict_forecastResidual)):
+        data_forecast_with_residual_sarima[
+            i] += forecastResidual[i - len(predict_forecastResidual)]
+    #====================================
+
+    #====================================
+    # Residual calcuated by lsarima
+    # forecast_ind = -24
+    for i in range(len(predict_forecastResidual)):
+        data_forecast_with_residual_lsarima[
+            i] += predict_forecastResidual[i - len(predict_forecastResidual)]
+    # print len(data_forecast)
+    #====================================
+    # Plot prediction results
+    duration = pd.to_datetime(
+        df)[predict_begin:predict_end-1]
+    print len(duration)
+    # print len(data_forecast) == len(duration)
+    data_forecast = pd.Series(data_forecast[0:-2], index=duration)
+    data_forecast_with_residual_sarima = pd.Series(
+        data_forecast_with_residual_sarima[0:-2], index=duration)
+    data_forecast_with_residual_lsarima = pd.Series(
+        data_forecast_with_residual_lsarima[0:-2], index=duration)
+
+    # ==============================
+    # print residual prediction
+    fig1, ax1 = plt.subplots(figsize=(10, 3))
+    residual = pd.Series(residual, index=pd.to_datetime(df))
+    ax1 = residual.ix['1999-03-01 00:00:00':].plot(ax=ax1)
+    predict_forecastResidual = pd.Series(predict_forecastResidual[0:-1], index=duration)
+    predict_forecastResidual.plot(ax=ax1, color='black')
+    # ==============================
+
+    # print predictions
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax = data.ix['1999-03-01 00:00:00':].plot(ax=ax)
+    # Figure 8
+    data_forecast.plot(ax=ax, color='red')
+    data_forecast_with_residual_sarima.plot(ax=ax, color='black')
+    data_forecast_with_residual_lsarima.plot(ax=ax, color='green')
+
+    # print MSE
+    testScore_mse = mean_squared_error(
+        data[predict_begin:-1], data_forecast_with_residual_lsarima)
+
+    # print MAE
+    testScore_mae = mean_absolute_error(
+        data[predict_begin:-1], data_forecast_with_residual_lsarima)
+
+    # print MAPE
+    testScore_mape = mean_absolute_percentage_error(
+        data[predict_begin:-1], data_forecast_with_residual_lsarima)
+
+    # print R squre
+    testScore_r2 = r2_score(
+        data[predict_begin:-1], data_forecast_with_residual_lsarima)
+
+    error = [testScore_mse, testScore_mae, testScore_mape, testScore_r2]
+
+    return (error, data_forecast_with_residual_lsarima)
+
+###########
+
+
 def predict_improved_lsarima(number, index, data, ratio):
 
     # Seasonal value, each 48-example is a loop
     sValue = 48
     # 30 minutes
     interval = 30
+
+    np.random.seed(7)
+    dataset = data.reshape(-1, 1)
+    dataset = normalized(dataset)
 
     df = pd.DataFrame({'year': 1999,
                        'month': 3,
@@ -234,51 +602,220 @@ def predict_improved_lsarima(number, index, data, ratio):
                                       seasonal_order=(1, 1, 1, sValue))
     results = model.fit(disp=0)
     # print results.summary()
-
-    decomposition = seasonal_decompose(data.values, freq=sValue)
+    decompose_freq = 6
+    decomposition = seasonal_decompose(data.values,
+                                       model="additive",
+                                       freq=decompose_freq)
     residual = decomposition.resid
+
+    count = 0
+    for i in range(len(residual)):
+        if not np.isnan(residual[i]):
+            count += 1
+    enter = "\r\n"
+    logfile = "test.txt"
     print("### Residuals ###")
     print len(residual)
+    print residual
+    print count
     print("#################")
 
+    # Predict the residual
+    # Reshape into X=t and Y=t+look_back
+    forecastResidual = residual.reshape(-1, 1)
+    forecastResidual[:decompose_freq / 2] = 0
+    forecastResidual[-decompose_freq / 2:] = 0
+
+    size = int(len(residual) * ratio)
+    forcast_ind = 48
+    seq_len = 48
+    # testforecastResidual = forecastResidual[forcast_ind:-forcast_ind]
+    print("> Formatting data...")
+    train_residualX, train_residualY, test_residualX, test_residualY = format_dataset(
+        forecastResidual, seq_len, len_ratio=ratio)
+    print("> Format completed.")
+
+    print("====== test_residualX ======")  
+    print test_residualX
+    print("============================")
+    print("====== test_residualY ======")
+    print test_residualY
+    print("============================")
+
+    # Create and fit the LSTM network
+    look_back = 1
+    batch_size = 512
+    epochs = 1000
+    layers_structure = [1, seq_len, 10, 1]
+
+    model_residual = build_lstm_model(layers=layers_structure)
+
+    model_residual.fit(
+        train_residualX,
+        train_residualY,
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=2)
+
     # Make predictions
+    # predict_forecastResidual = predict_point_by_point(
+    #     model_residual, test_residualX)
+    predict_forecastResidual = predict_sequence_full(
+        model=model_residual,
+        data=test_residualX,
+        window_size=seq_len)
+
+    print("====predict_forecastResidual====")
+    print len(predict_forecastResidual)
+    print predict_forecastResidual
+    print("===================")
+
     predict_begin = int(ratio * len(index))
     predict_end = int(len(index))
     data_forecast = results.predict(start=predict_begin,
                                     end=predict_end,
                                     dynamic=True)
+    data_forecast_with_residual = copy.deepcopy(data_forecast)
 
-    # print len(data_forecast)
+    print("=====data_forecast_with_residual=====")
+    print len(data_forecast_with_residual)
+    print data_forecast_with_residual
+    print("===================")
+    # print predict_forecastResidual.shape
+    # for i in range(len(predict_forecastResidual)):
+    #     data_forecast_with_residual[i] += predict_forecastResidual[i]
+
+    #====================================
+    # Residual calculated by sarima
+    # for i in range(len(predict_forecastResidual)):
+    #     data_forecast_with_residual[
+    #         i] += forecastResidual[i - len(predict_forecastResidual)]
+    #====================================
+
+    #====================================
+    # Residual calcuated by lsarima
+    # forecast_ind = -24
+    for i in range(len(predict_forecastResidual)):
+        data_forecast_with_residual[
+            i] += predict_forecastResidual[i - len(predict_forecastResidual)]
+    print len(data_forecast)
+    #====================================
     # Plot prediction results
-    duration = pd.to_datetime(df)[predict_begin - 1:predict_end]
-    # print len(duration)
+    duration = pd.to_datetime(
+        df)[predict_begin:predict_end - 1]
+    print len(duration)
     # print len(data_forecast) == len(duration)
-    data_forecast = pd.Series(data_forecast, index=duration)
+    data_forecast = pd.Series(data_forecast[0:-2], index=duration)
+    data_forecast_with_residual = pd.Series(
+        data_forecast_with_residual[0:-2], index=duration)
+
+    # #==============================================
+    # # plot residuals
+    # print forecastResidual.shape
+    # print len(forecastResidual.ravel())
+    # print predict_forecastResidual.shape
+    # print len(predict_forecastResidual.ravel())
+    # fig, ax = plt.subplots(figsize=(10, 3))
+    # forecastResidual = pd.Series(forecastResidual.ravel(), index=pd.to_datetime(df))
+    # if (len(duration) >= len(predict_forecastResidual.ravel())):        
+    #     predict_forecastResidual = pd.Series(predict_forecastResidual.ravel(), index=duration[0:-(len(duration)-len(predict_forecastResidual.ravel()))])
+    # else:
+    #     predict_forecastResidual = pd.Series(predict_forecastResidual.ravel()[0:-(len(predict_forecastResidual.ravel())-len(duration))], index=duration)
+    
+    # print("=====forecastResidual changed=====")
+    # print forecastResidual
+    # print("=================")
+
+    # print("=====predict_forecastResidual changed=====")
+    # print predict_forecastResidual
+    # print("=================")
+
+    # print("=====data=====")
+    # print data
+    # print("=================")
+
+    # ax = forecastResidual.ix['1999-03-01 00:00:00':].plot(ax=ax, color='black', label='Original')
+    # predict_forecastResidual.plot(ax=ax, color='red', label='Predicted')
+    # # plt.plot(forecastResidual, color='black', label='Original')
+    # # plt.plot(predict_forecastResidual, color='red', label='Predicted')
+    # plt.legend(loc='best')
+    # plt.title('Residuals')
+    # plt.show
+    # #==============================================
 
     # print predictions
     fig, ax = plt.subplots(figsize=(10, 3))
     ax = data.ix['1999-03-01 00:00:00':].plot(ax=ax)
     # Figure 8
     data_forecast.plot(ax=ax, color='red')
+    data_forecast_with_residual.plot(ax=ax, color='black')
+
+    # #==================================================
+    # # Test purpose
+    # # print MSE
+    # testScore_mse = mean_squared_error(
+    # data[predict_begin - 1:-2 + forecast_ind],
+    # data_forecast_with_residual[:forecast_ind])
+
+    # # print MAE
+    # testScore_mae = mean_absolute_error(
+    # data[predict_begin - 1:-2 + forecast_ind],
+    # data_forecast_with_residual[:forecast_ind])
+
+    # # print MAPE
+    # testScore_mape = mean_absolute_percentage_error(
+    # data[predict_begin - 1:-2 + forecast_ind],
+    # data_forecast_with_residual[:forecast_ind])
+
+    # # print R squre
+    # testScore_r2 = r2_score(
+    #     data[predict_begin - 1:-2 + forecast_ind], data_forecast_with_residual[:forecast_ind])
+    # #==================================================
 
     # print MSE
-    testScore_mse = mean_squared_error(data[predict_begin - 1:], data_forecast)
-    # print("Test Score: %.4f MSE" % error)
+    testScore_mse = mean_squared_error(
+        data[predict_begin:-1], data_forecast_with_residual)
 
     # print MAE
     testScore_mae = mean_absolute_error(
-        data[predict_begin - 1:], data_forecast)
+        data[predict_begin:-1], data_forecast_with_residual)
 
     # print MAPE
     testScore_mape = mean_absolute_percentage_error(
-        data[predict_begin - 1:], data_forecast)
+        data[predict_begin:-1], data_forecast_with_residual)
 
     # print R squre
-    testScore_r2 = r2_score(data[predict_begin - 1:], data_forecast)
+    testScore_r2 = r2_score(
+        data[predict_begin:-1], data_forecast_with_residual)
 
     error = [testScore_mse, testScore_mae, testScore_mape, testScore_r2]
 
-    return (error, data_forecast)
+    return (error, data_forecast_with_residual)
+
+    #=======================================
+    # # print MSE
+    # testScore_mse = mean_squared_error(data[predict_begin - 1:], data_forecast)
+    # # # print("Test Score: %.4f MSE" % error)
+    # # testResidual = data[predict_begin - 1:] - data_forecast
+    # # print("## testResidual ##")
+    # # print testResidual
+    # # print("##################")
+
+    # # print MAE
+    # testScore_mae = mean_absolute_error(
+    #     data[predict_begin - 1:], data_forecast)
+
+    # # print MAPE
+    # testScore_mape = mean_absolute_percentage_error(
+    #     data[predict_begin - 1:], data_forecast)
+
+    # # print R squre
+    # testScore_r2 = r2_score(data[predict_begin - 1:], data_forecast)
+
+    # error = [testScore_mse, testScore_mae, testScore_mape, testScore_r2]
+
+    # return (error, data_forecast)
+    #=======================================
 
 
 def predict_RNN(number, index, data, ratio):
@@ -300,64 +837,50 @@ def predict_RNN(number, index, data, ratio):
     # dataset = scaler.fit_transform(dataset)
     dataset = normalized(dataset)
 
-    # Split into train and test sets
+    # Format the dataset
     size = int(len(dataset) * ratio)
-    train, test = dataset[0:size], dataset[size:]
-    print(len(train), len(test))
-
-    # Reshape into X=t and Y=t+look_back
+    seq_len = 5
     look_back = 1
-    trainX, trainY = create_dataset(train, look_back)
-    testX, testY = create_dataset(test, look_back)
-
-    # print("trainX")
-    # print trainX
-    # print("===========================")
-    # print("trainY")
-    # print trainY
-    # print("===========================")
-
-    # Reshape input to be [samples, time steps, features]
-    trainX = np.reshape(trainX, (trainX.shape[0], look_back, trainX.shape[1]))
-    testX = np.reshape(testX, (testX.shape[0], look_back, testX.shape[1]))
-    # trainX = np.reshape(trainX, (trainX.shape[0], trainX.shape[1], 1))
-    # testX = np.reshape(testX, (testX.shape[0], testX.shape[1], 1))
-
-    # print("trainX")
-    # print trainX
-    # print("===========================")
-    # print("trainY")
-    # print trainY
-    # print("===========================")
+    batch_size = 512
+    epochs = 1000
+    layers_structure = [1, seq_len, 10, 1]
+    print("> Formatting data...")
+    trainX, trainY, testX, testY = format_dataset(
+        dataset, seq_len, len_ratio=ratio)
+    print(trainY.shape)
+    print("> Format completed.")
 
     # Create and fit the LSTM network
-    batch_size = 1
-    epochs = 100
-    model = Sequential()
-    model.add(LSTM(4, input_shape=(1, look_back)))
-    # model.add(LSTM(4, batch_input_shape=(batch_size, look_back, 1),
-    # stateful=True))
-    model.add(Dense(1))
-    model.compile(loss='mean_squared_error', optimizer='adam')
-    # verbose = 0, not log out epoch info
-    model.fit(trainX, trainY, epochs=epochs,
-              batch_size=batch_size, verbose=0)
+    model = build_lstm_model(layers_structure)
+    model.fit(
+        trainX,
+        trainY,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_split=0.05,
+        verbose=2)
 
     # Create and fit the GRU network
-    model2 = Sequential()
-    model2.add(GRU(4, input_shape=(1, look_back)))
-    # model2.add(GRU(4, batch_input_shape=(batch_size, look_back, 1),
-    # stateful=True))
-    model2.add(Dense(1))
-    model2.compile(loss='mean_squared_error', optimizer='adam')
-    model2.fit(trainX, trainY, epochs=epochs,
-               batch_size=batch_size, verbose=0)
+    model2 = build_gru_model(layers_structure)
+    model2.fit(
+        trainX,
+        trainY,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_split=0.05,
+        verbose=2)
 
     # Make predictions
-    trainPredict = model.predict(trainX)
-    testPredict = model.predict(testX)
-    trainPredict2 = model2.predict(trainX)
-    testPredict2 = model2.predict(testX)
+    trainPredict = predict_point_by_point(model, trainX)
+    testPredict = predict_point_by_point(model, testX)
+    # testPredict = predict_sequence_full(model=model,
+    #                                     data=testX,
+    #                                     window_size=seq_len)
+    trainPredict2 = predict_point_by_point(model2, trainX)
+    testPredict2 = predict_point_by_point(model2, testX)
+    # testPredict2 = predict_sequence_full(model=model2,
+    #                                     data=testX,
+    #                                     window_size=seq_len)
 
     # Invert predictions
     # trainPredict = scaler.inverse_transform(trainPredict)
@@ -407,6 +930,7 @@ def predict_RNN(number, index, data, ratio):
     #                 1:len(dataset) - 1] = testPredict
     # print len(testPredict)
     # print len(dataset) - size
+    size += len(testPredictPlot[size:len(dataset) - 2]) - len(testPredict)
     testPredictPlot[size:len(dataset) - 2] = testPredict
     testPredictPlot2[size:len(dataset) - 2] = testPredict2
 
@@ -464,86 +988,61 @@ def predict_LSTM_RNN(number, index, data, ratio):
 
     # Load the dataset
     dataset = data.reshape(-1, 1)
-    # print data
-    # print dataset
 
-    # Normalized the dataset
-    # scaler = MinMaxScaler(feature_range=(0, 1))
-    # dataset = scaler.fit_transform(dataset)
     dataset = normalized(dataset)
 
-    # Split into train and test sets
+    # Format the dataset
     size = int(len(dataset) * ratio)
-    train, test = dataset[0: size], dataset[size:]
-    print(len(train), len(test))
-
-    # Reshape into X=t and Y=t+look_back
-    look_back = 1
-    trainX, trainY = create_dataset(train, look_back)
-    testX, testY = create_dataset(test, look_back)
-
-    # print("trainX")
-    # print trainX
-    # print("===========================")
-    # print("trainY")
-    # print trainY
-    # print("===========================")
-
-    # Reshape input to be [samples, time steps, features]
-    # trainX = np.reshape(trainX, (trainX.shape[0], look_back, trainX.shape[1]))
-    # testX = np.reshape(testX, (testX.shape[0], look_back, testX.shape[1]))
-    trainX = np.reshape(trainX, (trainX.shape[0], 1, trainX.shape[1]))
-    testX = np.reshape(testX, (testX.shape[0], 1, testX.shape[1]))
-
-    # print("trainX")
-    # print trainX
-    # print("===========================")
-    # print("trainY")
-    # print trainY
-    # print("===========================")
-    print(len(trainX), len(trainY))
+    seq_len = 48
+    print("> Formatting data...")
+    trainX, trainY, testX, testY = format_dataset(
+        dataset, seq_len, len_ratio=ratio)
+    print(trainY.shape)
+    print("> Format completed.")
 
     # Create and fit the LSTM network
-    batch_size = 1
-    epochs = 100
-    model = Sequential()
-    model.add(LSTM(4, input_shape=(1, look_back)))
-    # model.add(LSTM(4, batch_input_shape=(batch_size, look_back, 1),
-    # stateful=True))
-    model.add(Dense(1))
-    model.compile(loss='mean_squared_error', optimizer='adam')
-    model.fit(trainX, trainY, epochs=epochs, batch_size=batch_size, verbose=2)
+    look_back = 1
+    batch_size = 512
+    epochs = 1000
+    model = build_lstm_model([1, seq_len, 100, 1])
+    # model = build_lstm_model([1, seq_len, 1])
+
+    model.fit(
+        trainX,
+        trainY,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_split=0.05,
+        verbose=2)
 
     # Make predictions
-    trainPredict = model.predict(trainX)
-    testPredict = model.predict(testX)
-    # trainPredict = model.predict(trainX, batch_size=batch_size)
-    # testPredict = model.predict(testX, batch_size=batch_size)
-
-    # Invert predictions
-    # trainPredict = scaler.inverse_transform(trainPredict)
-    # trainY = scaler.inverse_transform([trainY])
-    # testPredict = scaler.inverse_transform(testPredict)
-    # testY = scaler.inverse_transform([testY])
-
-    # print("trainY")
-    # print trainY
-    # print("===========================")
-    # print("trainPredict")
-    # print trainPredict[:, 0]
-    # print("===========================")
-
-    # # Calculate root mean squared error
-    # # trainScore = math.sqrt(mean_squared_error(trainY[0], trainPredict[:,0]))
-    # trainScore = mean_squared_error(trainY, trainPredict)**0.5
-    # print("Train Score: %.2f RMSE" % (trainScore))
-    # # testScore = math.sqrt(mean_squared_error(testY[0], testPredict[:,0]))
-    # testScore = mean_squared_error(testY, testPredict)**0.5
-    # print("Test Score: %.2f RMSE" % (testScore))
+    # size = size + 1
+    trainPredict = predict_point_by_point(model, trainX)
+    # testPredict = predict_point_by_point(model, testX)
+    # testPredict = predict_sequences_multiple(model=model,
+    #                                          data=testX,
+    #                                          window_size=seq_len,
+    #                                          prediction_len=48)
+    testPredict = predict_sequence_full(model=model,
+                                        data=testX,
+                                        window_size=seq_len)
 
     # Calculate mean squared error
     trainScore = mean_squared_error(trainY, trainPredict)
     print("Train Score: %.4f MSE" % (trainScore))
+
+    # # For point to point
+    # testScore = mean_squared_error(testY, testPredict)
+    # print("Test Score: %.4f MSE" % (testScore))
+
+    # # For multiple points
+    # print testPredict
+    # testPredict = np.reshape(np.asarray(testPredict[0]), (-1, 1))
+    # testScore = mean_squared_error(testY, testPredict)
+    # print("Test Score: %.4f MSE" % (testScore))
+
+    # For sequence full
+    testPredict = np.reshape(np.asarray(testPredict), (-1, 1))
     testScore = mean_squared_error(testY, testPredict)
     print("Test Score: %.4f MSE" % (testScore))
 
@@ -555,23 +1054,17 @@ def predict_LSTM_RNN(number, index, data, ratio):
     # Shift test predictions for plotting
     testPredictPlot = np.empty_like(dataset)
     testPredictPlot[:] = np.nan
-    # testPredictPlot[len(trainPredict) + (look_back * 2) +
-    #                 1:len(dataset) - 1] = testPredict
-    # print len(testPredict)
-    # print len(dataset) - size
+
+    print(testPredict.shape)
+    size += len(testPredictPlot[size: len(dataset) - 2]) - len(testPredict)
     testPredictPlot[size: len(dataset) - 2] = testPredict
 
     # Plot baseline and predictions
-    # plt.plot(scaler.inverse_transform(dataset))
     fig = plt.figure(figsize=(10, 3))
     plt.plot(dataset, color='blue', label='Original')
-    # plt.plot(trainPredictPlot, color='red', label='trainPredictPlot')
     plt.plot(testPredictPlot, color='black', label='testPredictPlot')
     plt.legend(loc='best')
     plt.title('Prediction by LSTM NN')
-    # plt.plot(dataset)
-    # plt.plot(trainPredictPlot)
-    # plt.plot(testPredictPlot)
 
     testScore1 = mean_squared_error(
         dataset[size:len(dataset) - 2], testPredict)
