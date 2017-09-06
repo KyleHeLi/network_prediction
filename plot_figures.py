@@ -360,8 +360,8 @@ def predict_rnn_section(number, index, data, ratio):
 
     print("> Formatting data...")
     seq_len = 2
-    batch_size = 512
-    epochs = 10000
+    batch_size = 10
+    epochs = 100
     layers_structure = [1, seq_len, 4, 1]
     trainX_List = []
     trainY_List = []
